@@ -505,6 +505,13 @@ tr:last-child td {
   font-weight: 600;
 }
 
+.form-error {
+  margin: -2px 0 0;
+  color: #ffadb8;
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .totals-card {
   display: grid;
   gap: 10px;

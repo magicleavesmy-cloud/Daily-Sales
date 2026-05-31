@@ -367,8 +367,10 @@ export default function App() {
           resetForm={resetForm}
           saveImage={saveImage}
           setAmount={setAmount}
+          setCategories={setCategories}
           setCategoryId={setCategoryId}
           setDate={setDate}
+          setSubcategories={setSubcategories}
           setSubcategoryId={setSubcategoryId}
           setType={setType}
           shareImage={shareImage}
@@ -408,8 +410,10 @@ function DailyPage({
   resetForm,
   saveImage,
   setAmount,
+  setCategories,
   setCategoryId,
   setDate,
+  setSubcategories,
   setSubcategoryId,
   setType,
   shareImage,
@@ -420,6 +424,67 @@ function DailyPage({
   updateReport,
   yesterdayCash,
 }) {
+  const [quickAdd, setQuickAdd] = useState({ error: "", name: "", type: "" });
+
+  const closeQuickAdd = () => setQuickAdd({ error: "", name: "", type: "" });
+
+  const openQuickAdd = (type) => setQuickAdd({ error: "", name: "", type });
+
+  const saveQuickAdd = (event) => {
+    event.preventDefault();
+    const name = cleanName(quickAdd.name);
+
+    if (!name) {
+      setQuickAdd((current) => ({ ...current, error: "Name is required." }));
+      return;
+    }
+
+    if (quickAdd.type === "category") {
+      const existing = categories.find((category) => category.name === name);
+
+      if (existing) {
+        setCategoryId(existing.id);
+        setSubcategoryId("");
+        closeQuickAdd();
+        return;
+      }
+
+      const nextCategory = { id: crypto.randomUUID(), name };
+      setCategories((current) => [...current, nextCategory]);
+      setCategoryId(nextCategory.id);
+      setSubcategoryId("");
+      closeQuickAdd();
+      return;
+    }
+
+    if (!categoryId) {
+      setQuickAdd((current) => ({
+        ...current,
+        error: "Choose a category first.",
+      }));
+      return;
+    }
+
+    const existing = filteredSubcategories.find(
+      (subcategory) => subcategory.name === name,
+    );
+
+    if (existing) {
+      setSubcategoryId(existing.id);
+      closeQuickAdd();
+      return;
+    }
+
+    const nextSubcategory = {
+      categoryId,
+      id: crypto.randomUUID(),
+      name,
+    };
+    setSubcategories((current) => [...current, nextSubcategory]);
+    setSubcategoryId(nextSubcategory.id);
+    closeQuickAdd();
+  };
+
   return (
     <>
       <header className="screen-header">
@@ -491,13 +556,21 @@ function DailyPage({
             Category
             <select
               ref={categoryRef}
-              value={categoryId}
+              value={categoryId || "__placeholder"}
               onChange={(event) => {
+                if (event.target.value === "__add_category") {
+                  openQuickAdd("category");
+                  return;
+                }
+
                 setCategoryId(event.target.value);
                 setSubcategoryId("");
               }}
             >
-              <option value="">Choose category</option>
+              <option value="__placeholder" disabled hidden>
+                Choose category
+              </option>
+              <option value="__add_category">+ Add New Category</option>
               {categories.map((category) => (
                 <option key={category.id} value={category.id}>
                   {category.name}
@@ -509,11 +582,21 @@ function DailyPage({
           <label>
             Sub Category
             <select
-              value={subcategoryId}
-              onChange={(event) => setSubcategoryId(event.target.value)}
+              value={subcategoryId || "__placeholder"}
+              onChange={(event) => {
+                if (event.target.value === "__add_subcategory") {
+                  openQuickAdd("subcategory");
+                  return;
+                }
+
+                setSubcategoryId(event.target.value);
+              }}
               disabled={!categoryId}
             >
-              <option value="">Choose sub category</option>
+              <option value="__placeholder" disabled hidden>
+                Choose sub category
+              </option>
+              <option value="__add_subcategory">+ Add New Sub Category</option>
               {filteredSubcategories.map((subcategory) => (
                 <option key={subcategory.id} value={subcategory.id}>
                   {subcategory.name}
@@ -659,6 +742,48 @@ function DailyPage({
       </section>
 
       <div className="bottom-spacer" />
+
+      {quickAdd.type && (
+        <div className="sheet-backdrop" role="presentation">
+          <section className="bottom-sheet" role="dialog" aria-modal="true">
+            <div className="sheet-handle" />
+            <div className="section-title">
+              <h2>
+                {quickAdd.type === "category"
+                  ? "Add New Category"
+                  : "Add New Sub Category"}
+              </h2>
+              <button type="button" className="text-button" onClick={closeQuickAdd}>
+                Close
+              </button>
+            </div>
+
+            <form className="sheet-form" onSubmit={saveQuickAdd}>
+              <label>
+                Name
+                <input
+                  autoFocus
+                  placeholder="Name"
+                  value={quickAdd.name}
+                  onChange={(event) =>
+                    setQuickAdd((current) => ({
+                      ...current,
+                      error: "",
+                      name: event.target.value.toUpperCase(),
+                    }))
+                  }
+                />
+              </label>
+
+              {quickAdd.error && <p className="form-error">{quickAdd.error}</p>}
+
+              <button type="submit" className="primary">
+                Save
+              </button>
+            </form>
+          </section>
+        </div>
+      )}
     </>
   );
 }
