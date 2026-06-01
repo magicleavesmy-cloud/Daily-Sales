@@ -7,6 +7,7 @@ import {
   saveDailyReport,
   saveDailyReports,
   subscribeToCollection,
+  testFirestoreSync,
 } from "./firebase";
 import "./App.css";
 
@@ -95,6 +96,16 @@ export default function App() {
   );
   const [shareStatus, setShareStatus] = useState("");
   const [syncStatus, setSyncStatus] = useState("Not synced");
+  const [syncError, setSyncError] = useState(
+    isFirestoreEnabled
+      ? "Waiting for Firestore connection"
+      : "Missing Firebase environment variables",
+  );
+  const [syncErrorCode, setSyncErrorCode] = useState(
+    isFirestoreEnabled ? "pending" : "missing-env",
+  );
+  const [testSyncStatus, setTestSyncStatus] = useState("");
+  const [isTestingSync, setIsTestingSync] = useState(false);
   const [toastMessage, setToastMessage] = useState("");
   const categoryRef = useRef(null);
   const reportRef = useRef(null);
@@ -151,6 +162,24 @@ export default function App() {
   const hasWarning = totals.online > totals.totalExp;
   const isEditingReport = editingReportDate === date;
 
+  function markSynced() {
+    setSyncStatus("Synced");
+    setSyncError("");
+    setSyncErrorCode("");
+  }
+
+  function markNotSynced(reason) {
+    setSyncStatus("Not synced");
+    setSyncErrorCode(typeof reason === "string" ? "pending" : reason?.code || "unknown");
+    setSyncError(
+      typeof reason === "string"
+        ? reason
+        : `${reason?.code || "unknown"}: ${
+            reason?.message || "Unknown Firestore sync error"
+          }`,
+    );
+  }
+
   useEffect(() => {
     localStorage.setItem(REPORTS_KEY, JSON.stringify(reports));
   }, [reports]);
@@ -173,9 +202,17 @@ export default function App() {
     }
 
     const handleSnapshotStatus = (metadata) => {
-      setSyncStatus(
-        metadata.hasPendingWrites || metadata.fromCache ? "Not synced" : "Synced",
-      );
+      if (metadata.hasPendingWrites) {
+        markNotSynced("Firestore write pending");
+        return;
+      }
+
+      if (metadata.fromCache) {
+        markNotSynced("Using cached Firestore data");
+        return;
+      }
+
+      markSynced();
     };
 
     const unsubscribeCategories = subscribeToCollection(
@@ -187,14 +224,20 @@ export default function App() {
           !seededRef.current.categories
         ) {
           seededRef.current.categories = true;
-          await syncCollection("categories", seedCacheRef.current.categories, []);
+          markNotSynced("Seeding cached categories to Firestore");
+          try {
+            await saveCollectionItems("categories", seedCacheRef.current.categories, []);
+            markSynced();
+          } catch (error) {
+            markNotSynced(error);
+          }
           return;
         }
 
         setCategories(items);
         handleSnapshotStatus(metadata);
       },
-      () => setSyncStatus("Not synced"),
+      (error) => markNotSynced(error),
     );
 
     const unsubscribeSubcategories = subscribeToCollection(
@@ -206,18 +249,24 @@ export default function App() {
           !seededRef.current.subcategories
         ) {
           seededRef.current.subcategories = true;
-          await syncCollection(
-            "subCategories",
-            seedCacheRef.current.subcategories,
-            [],
-          );
+          markNotSynced("Seeding cached subCategories to Firestore");
+          try {
+            await saveCollectionItems(
+              "subCategories",
+              seedCacheRef.current.subcategories,
+              [],
+            );
+            markSynced();
+          } catch (error) {
+            markNotSynced(error);
+          }
           return;
         }
 
         setSubcategories(items);
         handleSnapshotStatus(metadata);
       },
-      () => setSyncStatus("Not synced"),
+      (error) => markNotSynced(error),
     );
 
     const unsubscribeReports = subscribeToCollection(
@@ -229,12 +278,12 @@ export default function App() {
           !seededRef.current.reports
         ) {
           seededRef.current.reports = true;
-          setSyncStatus("Not synced");
+          markNotSynced("Seeding cached reports to Firestore");
           try {
             await saveDailyReports(seedCacheRef.current.reports);
-            setSyncStatus("Synced");
-          } catch {
-            setSyncStatus("Not synced");
+            markSynced();
+          } catch (error) {
+            markNotSynced(error);
           }
           return;
         }
@@ -254,7 +303,7 @@ export default function App() {
         setSavedReportDates(items.map((item) => item.id));
         handleSnapshotStatus(metadata);
       },
-      () => setSyncStatus("Not synced"),
+      (error) => markNotSynced(error),
     );
 
     return () => {
@@ -287,26 +336,36 @@ export default function App() {
   };
 
   async function syncCollection(collectionName, nextItems, previousItems) {
-    if (!isFirestoreEnabled) return;
+    if (!isFirestoreEnabled) {
+      markNotSynced("Missing Firebase environment variables");
+      return false;
+    }
 
-    setSyncStatus("Not synced");
+    markNotSynced(`Saving ${collectionName} to Firestore`);
     try {
       await saveCollectionItems(collectionName, nextItems, previousItems);
-      setSyncStatus("Synced");
-    } catch {
-      setSyncStatus("Not synced");
+      markSynced();
+      return true;
+    } catch (error) {
+      markNotSynced(error);
+      return false;
     }
   }
 
   async function syncDailyReport(reportDate, nextReport) {
-    if (!isFirestoreEnabled) return;
+    if (!isFirestoreEnabled) {
+      markNotSynced("Missing Firebase environment variables");
+      return false;
+    }
 
-    setSyncStatus("Not synced");
+    markNotSynced(`Saving dailyReports/${reportDate} to Firestore`);
     try {
       await saveDailyReport(reportDate, nextReport);
-      setSyncStatus("Synced");
-    } catch {
-      setSyncStatus("Not synced");
+      markSynced();
+      return true;
+    } catch (error) {
+      markNotSynced(error);
+      return false;
     }
   }
 
@@ -362,7 +421,7 @@ export default function App() {
     };
 
     setIsSavingReport(true);
-    setSyncStatus("Not synced");
+    markNotSynced(`Saving dailyReports/${date} to Firestore`);
     setReports((currentReports) => ({
       ...currentReports,
       [date]: nextReport,
@@ -372,9 +431,11 @@ export default function App() {
     );
 
     try {
-      await syncDailyReport(date, nextReport);
-      setEditingReportDate("");
-      showToast("Report Saved");
+      const didSync = await syncDailyReport(date, nextReport);
+      if (didSync) {
+        setEditingReportDate("");
+        showToast("Report Saved");
+      }
     } finally {
       setIsSavingReport(false);
     }
@@ -397,7 +458,7 @@ export default function App() {
   const deleteReport = async (savedDate) => {
     if (!window.confirm("Delete this report? This cannot be undone.")) return;
 
-    setSyncStatus("Not synced");
+    markNotSynced(`Deleting dailyReports/${savedDate} from Firestore`);
     setReports((currentReports) => {
       const nextReports = { ...currentReports };
       delete nextReports[savedDate];
@@ -410,12 +471,33 @@ export default function App() {
     try {
       if (isFirestoreEnabled) {
         await deleteDailyReport(savedDate);
-        setSyncStatus("Synced");
+        markSynced();
       } else {
-        setSyncStatus("Not synced");
+        markNotSynced("Missing Firebase environment variables");
       }
-    } catch {
-      setSyncStatus("Not synced");
+    } catch (error) {
+      markNotSynced(error);
+    }
+  };
+
+  const runTestSync = async () => {
+    setIsTestingSync(true);
+    setTestSyncStatus("");
+    markNotSynced("Testing Firestore sync at debug/test");
+
+    try {
+      await testFirestoreSync();
+      markSynced();
+      setTestSyncStatus("Sync OK");
+    } catch (error) {
+      markNotSynced(error);
+      setTestSyncStatus(
+        `${error?.code || "unknown"}: ${
+          error?.message || "Unknown Firestore sync error"
+        }`,
+      );
+    } finally {
+      setIsTestingSync(false);
     }
   };
 
@@ -607,7 +689,11 @@ export default function App() {
           reports={reports}
         />
       ) : page === "/settings" ? (
-        <SettingsPage />
+        <SettingsPage
+          isTestingSync={isTestingSync}
+          runTestSync={runTestSync}
+          testSyncStatus={testSyncStatus}
+        />
       ) : (
         <DailyPage
           addEntry={addEntry}
@@ -644,6 +730,8 @@ export default function App() {
           shareStatus={shareStatus}
           isEditingReport={isEditingReport}
           isSavingReport={isSavingReport}
+          syncErrorCode={syncErrorCode}
+          syncError={syncError}
           syncStatus={syncStatus}
           subcategoryId={subcategoryId}
           totals={totals}
@@ -654,7 +742,12 @@ export default function App() {
       )}
 
       <div className={syncStatus === "Synced" ? "sync-pill synced" : "sync-pill"}>
-        {syncStatus}
+        {syncStatus === "Not synced" && syncErrorCode
+          ? `Not synced: ${syncErrorCode}`
+          : syncStatus}
+        {syncStatus === "Not synced" && syncError && (
+          <span className="sync-error">{syncError}</span>
+        )}
       </div>
 
       {toastMessage && <div className="toast">{toastMessage}</div>}
@@ -699,6 +792,8 @@ function DailyPage({
   shareStatus,
   isEditingReport,
   isSavingReport,
+  syncErrorCode,
+  syncError,
   syncStatus,
   subcategoryId,
   totals,
@@ -784,8 +879,13 @@ function DailyPage({
               syncStatus === "Synced" ? "sync-status synced" : "sync-status"
             }
           >
-            {syncStatus}
+            {syncStatus === "Not synced" && syncErrorCode
+              ? `Not synced: ${syncErrorCode}`
+              : syncStatus}
           </span>
+          {syncStatus === "Not synced" && syncError && (
+            <span className="sync-error inline">{syncError}</span>
+          )}
         </div>
 
         <label className="date-field">
@@ -1494,7 +1594,7 @@ function BottomNav({ navigate, onAdd, page }) {
   );
 }
 
-function SettingsPage() {
+function SettingsPage({ isTestingSync, runTestSync, testSyncStatus }) {
   return (
     <>
       <header className="screen-header">
@@ -1506,7 +1606,16 @@ function SettingsPage() {
       </header>
       <section className="card">
         <h2>App Settings</h2>
-        <p className="empty-panel">No settings yet.</p>
+        <button
+          type="button"
+          className="primary test-sync"
+          disabled={isTestingSync}
+          onClick={runTestSync}
+        >
+          {isTestingSync && <span className="spinner" />}
+          Test Sync
+        </button>
+        {testSyncStatus && <p className="sync-test-result">{testSyncStatus}</p>}
       </section>
       <div className="bottom-spacer" />
     </>
