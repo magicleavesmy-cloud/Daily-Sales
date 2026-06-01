@@ -1,10 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import html2canvas from "html2canvas";
+import {
+  deleteDailyReport,
+  isFirestoreEnabled,
+  saveCollectionItems,
+  saveDailyReport,
+  saveDailyReports,
+  subscribeToCollection,
+} from "./firebase";
 import "./App.css";
 
 const REPORTS_KEY = "daily-report-by-date";
 const CATEGORIES_KEY = "daily-report-categories";
 const SUBCATEGORIES_KEY = "daily-report-subcategories";
+const SAVED_REPORT_DATES_KEY = "daily-report-saved-dates";
 const BUSINESS_NAME = "BUSINESS NAME";
 const reportLine = "--------------------------------";
 
@@ -79,9 +88,22 @@ export default function App() {
   const [subcategoryId, setSubcategoryId] = useState("");
   const [type, setType] = useState("Cash");
   const [editingId, setEditingId] = useState("");
+  const [editingReportDate, setEditingReportDate] = useState("");
+  const [isSavingReport, setIsSavingReport] = useState(false);
+  const [savedReportDates, setSavedReportDates] = useState(() =>
+    loadJson(SAVED_REPORT_DATES_KEY, []),
+  );
   const [shareStatus, setShareStatus] = useState("");
+  const [syncStatus, setSyncStatus] = useState("Not synced");
+  const [toastMessage, setToastMessage] = useState("");
   const categoryRef = useRef(null);
   const reportRef = useRef(null);
+  const seedCacheRef = useRef({ categories, reports, subcategories });
+  const seededRef = useRef({
+    categories: false,
+    reports: false,
+    subcategories: false,
+  });
 
   const report = reports[date] || blankReport();
   const { balanceCash, entries, yesterdayCash } = report;
@@ -119,11 +141,15 @@ export default function App() {
   );
 
   const historyDates = useMemo(
-    () => Object.keys(reports).sort((a, b) => b.localeCompare(a)),
-    [reports],
+    () =>
+      savedReportDates
+        .filter((savedDate) => reports[savedDate])
+        .sort((a, b) => b.localeCompare(a)),
+    [reports, savedReportDates],
   );
 
   const hasWarning = totals.online > totals.totalExp;
+  const isEditingReport = editingReportDate === date;
 
   useEffect(() => {
     localStorage.setItem(REPORTS_KEY, JSON.stringify(reports));
@@ -136,6 +162,107 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(SUBCATEGORIES_KEY, JSON.stringify(subcategories));
   }, [subcategories]);
+
+  useEffect(() => {
+    localStorage.setItem(SAVED_REPORT_DATES_KEY, JSON.stringify(savedReportDates));
+  }, [savedReportDates]);
+
+  useEffect(() => {
+    if (!isFirestoreEnabled) {
+      return undefined;
+    }
+
+    const handleSnapshotStatus = (metadata) => {
+      setSyncStatus(
+        metadata.hasPendingWrites || metadata.fromCache ? "Not synced" : "Synced",
+      );
+    };
+
+    const unsubscribeCategories = subscribeToCollection(
+      "categories",
+      async (items, metadata) => {
+        if (
+          items.length === 0 &&
+          seedCacheRef.current.categories.length > 0 &&
+          !seededRef.current.categories
+        ) {
+          seededRef.current.categories = true;
+          await syncCollection("categories", seedCacheRef.current.categories, []);
+          return;
+        }
+
+        setCategories(items);
+        handleSnapshotStatus(metadata);
+      },
+      () => setSyncStatus("Not synced"),
+    );
+
+    const unsubscribeSubcategories = subscribeToCollection(
+      "subCategories",
+      async (items, metadata) => {
+        if (
+          items.length === 0 &&
+          seedCacheRef.current.subcategories.length > 0 &&
+          !seededRef.current.subcategories
+        ) {
+          seededRef.current.subcategories = true;
+          await syncCollection(
+            "subCategories",
+            seedCacheRef.current.subcategories,
+            [],
+          );
+          return;
+        }
+
+        setSubcategories(items);
+        handleSnapshotStatus(metadata);
+      },
+      () => setSyncStatus("Not synced"),
+    );
+
+    const unsubscribeReports = subscribeToCollection(
+      "dailyReports",
+      async (items, metadata) => {
+        if (
+          items.length === 0 &&
+          Object.keys(seedCacheRef.current.reports).length > 0 &&
+          !seededRef.current.reports
+        ) {
+          seededRef.current.reports = true;
+          setSyncStatus("Not synced");
+          try {
+            await saveDailyReports(seedCacheRef.current.reports);
+            setSyncStatus("Synced");
+          } catch {
+            setSyncStatus("Not synced");
+          }
+          return;
+        }
+
+        setReports(
+          items.reduce((nextReports, item) => {
+            const { id, ...reportData } = item;
+            return {
+              ...nextReports,
+              [id]: {
+                ...blankReport(),
+                ...reportData,
+              },
+            };
+          }, {}),
+        );
+        setSavedReportDates(items.map((item) => item.id));
+        handleSnapshotStatus(metadata);
+      },
+      () => setSyncStatus("Not synced"),
+    );
+
+    return () => {
+      unsubscribeCategories();
+      unsubscribeSubcategories();
+      unsubscribeReports();
+    };
+  }, []);
 
   useEffect(() => {
     const handlePopState = () => setPage(window.location.pathname);
@@ -159,16 +286,152 @@ export default function App() {
     }, 80);
   };
 
+  async function syncCollection(collectionName, nextItems, previousItems) {
+    if (!isFirestoreEnabled) return;
+
+    setSyncStatus("Not synced");
+    try {
+      await saveCollectionItems(collectionName, nextItems, previousItems);
+      setSyncStatus("Synced");
+    } catch {
+      setSyncStatus("Not synced");
+    }
+  }
+
+  async function syncDailyReport(reportDate, nextReport) {
+    if (!isFirestoreEnabled) return;
+
+    setSyncStatus("Not synced");
+    try {
+      await saveDailyReport(reportDate, nextReport);
+      setSyncStatus("Synced");
+    } catch {
+      setSyncStatus("Not synced");
+    }
+  }
+
+  const updateCategories = (updater) => {
+    setCategories((current) => {
+      const next = typeof updater === "function" ? updater(current) : updater;
+      syncCollection("categories", next, current);
+      return next;
+    });
+  };
+
+  const updateSubcategories = (updater) => {
+    setSubcategories((current) => {
+      const next = typeof updater === "function" ? updater(current) : updater;
+      syncCollection("subCategories", next, current);
+      return next;
+    });
+  };
+
   const updateReport = (changes) => {
-    setReports((currentReports) => ({
-      ...currentReports,
-      [date]: {
+    setReports((currentReports) => {
+      const nextReport = {
         ...blankReport(),
         ...(currentReports[date] || {}),
         ...changes,
         updatedAt: new Date().toISOString(),
-      },
+      };
+
+      return {
+        ...currentReports,
+        [date]: nextReport,
+      };
+    });
+  };
+
+  const showToast = (message) => {
+    setToastMessage(message);
+    window.setTimeout(() => setToastMessage(""), 2200);
+  };
+
+  const saveCurrentReport = async ({ allowOverwrite = false } = {}) => {
+    const hasSavedReport = savedReportDates.includes(date);
+
+    if (hasSavedReport && !allowOverwrite) {
+      const shouldOverwrite = window.confirm("Overwrite existing report?");
+      if (!shouldOverwrite) return;
+    }
+
+    const nextReport = {
+      ...blankReport(),
+      ...(reports[date] || {}),
+      updatedAt: new Date().toISOString(),
+    };
+
+    setIsSavingReport(true);
+    setSyncStatus("Not synced");
+    setReports((currentReports) => ({
+      ...currentReports,
+      [date]: nextReport,
     }));
+    setSavedReportDates((currentDates) =>
+      currentDates.includes(date) ? currentDates : [...currentDates, date],
+    );
+
+    try {
+      await syncDailyReport(date, nextReport);
+      setEditingReportDate("");
+      showToast("Report Saved");
+    } finally {
+      setIsSavingReport(false);
+    }
+  };
+
+  const openReport = (savedDate) => {
+    setDate(savedDate);
+    setEditingReportDate("");
+    resetFormForReport(savedDate);
+    navigate("/");
+  };
+
+  const editReport = (savedDate) => {
+    setDate(savedDate);
+    setEditingReportDate(savedDate);
+    resetFormForReport(savedDate);
+    navigate("/");
+  };
+
+  const deleteReport = async (savedDate) => {
+    if (!window.confirm("Delete this report? This cannot be undone.")) return;
+
+    setSyncStatus("Not synced");
+    setReports((currentReports) => {
+      const nextReports = { ...currentReports };
+      delete nextReports[savedDate];
+      return nextReports;
+    });
+    setSavedReportDates((currentDates) =>
+      currentDates.filter((currentDate) => currentDate !== savedDate),
+    );
+
+    try {
+      if (isFirestoreEnabled) {
+        await deleteDailyReport(savedDate);
+        setSyncStatus("Synced");
+      } else {
+        setSyncStatus("Not synced");
+      }
+    } catch {
+      setSyncStatus("Not synced");
+    }
+  };
+
+  const cancelReportEdit = () => {
+    setEditingReportDate("");
+    resetForm();
+  };
+
+  const resetFormForReport = (reportDate) => {
+    const selectedReport = reports[reportDate] || blankReport();
+    const firstEntry = selectedReport.entries[0];
+    setAmount("");
+    setCategoryId(firstEntry?.categoryId || "");
+    setSubcategoryId(firstEntry?.subcategoryId || "");
+    setType(firstEntry?.type || "Cash");
+    setEditingId("");
   };
 
   const resetForm = () => {
@@ -331,16 +594,17 @@ export default function App() {
       {page === "/admin" ? (
         <AdminPage
           categories={categories}
-          setCategories={setCategories}
-          setSubcategories={setSubcategories}
+          setCategories={updateCategories}
+          setSubcategories={updateSubcategories}
           subcategories={subcategories}
         />
       ) : page === "/history" ? (
         <HistoryPage
+          deleteReport={deleteReport}
+          editReport={editReport}
           historyDates={historyDates}
+          openReport={openReport}
           reports={reports}
-          setDate={setDate}
-          navigate={navigate}
         />
       ) : page === "/settings" ? (
         <SettingsPage />
@@ -357,6 +621,7 @@ export default function App() {
           date={date}
           deleteEntry={deleteEntry}
           duplicateYesterday={duplicateYesterday}
+          editingReportDate={editingReportDate}
           editingId={editingId}
           entries={entries}
           filteredSubcategories={filteredSubcategories}
@@ -365,16 +630,21 @@ export default function App() {
           reportRef={reportRef}
           reportText={reportText}
           resetForm={resetForm}
+          cancelReportEdit={cancelReportEdit}
           saveImage={saveImage}
+          saveCurrentReport={saveCurrentReport}
           setAmount={setAmount}
-          setCategories={setCategories}
+          setCategories={updateCategories}
           setCategoryId={setCategoryId}
           setDate={setDate}
-          setSubcategories={setSubcategories}
+          setSubcategories={updateSubcategories}
           setSubcategoryId={setSubcategoryId}
           setType={setType}
           shareImage={shareImage}
           shareStatus={shareStatus}
+          isEditingReport={isEditingReport}
+          isSavingReport={isSavingReport}
+          syncStatus={syncStatus}
           subcategoryId={subcategoryId}
           totals={totals}
           type={type}
@@ -382,6 +652,12 @@ export default function App() {
           yesterdayCash={yesterdayCash}
         />
       )}
+
+      <div className={syncStatus === "Synced" ? "sync-pill synced" : "sync-pill"}>
+        {syncStatus}
+      </div>
+
+      {toastMessage && <div className="toast">{toastMessage}</div>}
 
       <BottomNav page={page} navigate={navigate} onAdd={goToAddEntry} />
     </main>
@@ -400,6 +676,7 @@ function DailyPage({
   date,
   deleteEntry,
   duplicateYesterday,
+  editingReportDate,
   editingId,
   entries,
   filteredSubcategories,
@@ -408,7 +685,9 @@ function DailyPage({
   reportRef,
   reportText,
   resetForm,
+  cancelReportEdit,
   saveImage,
+  saveCurrentReport,
   setAmount,
   setCategories,
   setCategoryId,
@@ -418,6 +697,9 @@ function DailyPage({
   setType,
   shareImage,
   shareStatus,
+  isEditingReport,
+  isSavingReport,
+  syncStatus,
   subcategoryId,
   totals,
   type,
@@ -491,7 +773,19 @@ function DailyPage({
         <div>
           <p>Daily</p>
           <h1>Daily Report</h1>
+          {isEditingReport && (
+            <span className="editing-label">
+              Editing Report: {displayDate(editingReportDate)}
+            </span>
+          )}
           <span>Last updated: {displayTime(report.updatedAt)}</span>
+          <span
+            className={
+              syncStatus === "Synced" ? "sync-status synced" : "sync-status"
+            }
+          >
+            {syncStatus}
+          </span>
         </div>
 
         <label className="date-field">
@@ -500,6 +794,9 @@ function DailyPage({
             type="date"
             value={date}
             onChange={(event) => {
+              if (isEditingReport) {
+                cancelReportEdit();
+              }
               setDate(event.target.value);
               resetForm();
             }}
@@ -742,6 +1039,27 @@ function DailyPage({
       </section>
 
       <div className="bottom-spacer" />
+
+      <div className="save-dock">
+        {isEditingReport && (
+          <button
+            type="button"
+            className="ghost cancel-edit"
+            onClick={cancelReportEdit}
+          >
+            Cancel Edit
+          </button>
+        )}
+        <button
+          type="button"
+          className="save-report"
+          disabled={isSavingReport}
+          onClick={() => saveCurrentReport({ allowOverwrite: isEditingReport })}
+        >
+          {isSavingReport && <span className="spinner" />}
+          {isEditingReport ? "Save Changes" : "Save Report"}
+        </button>
+      </div>
 
       {quickAdd.type && (
         <div className="sheet-backdrop" role="presentation">
@@ -1068,7 +1386,7 @@ function AdminSheet({
   );
 }
 
-function HistoryPage({ historyDates, reports, setDate, navigate }) {
+function HistoryPage({ deleteReport, editReport, historyDates, openReport, reports }) {
   return (
     <>
       <header className="hero compact-hero">
@@ -1091,19 +1409,32 @@ function HistoryPage({ historyDates, reports, setDate, navigate }) {
             );
 
             return (
-              <button
-                type="button"
-                className="history-item"
-                key={savedDate}
-                onClick={() => {
-                  setDate(savedDate);
-                  navigate("/");
-                }}
-              >
-                <span>{displayDate(savedDate)}</span>
-                <strong>RM {money(totalExp)}</strong>
-                <em>{savedReport.entries.length} entry(s)</em>
-              </button>
+              <article className="history-item" key={savedDate}>
+                <div className="history-summary">
+                  <span>{displayDate(savedDate)}</span>
+                  <strong>RM {money(totalExp)}</strong>
+                  <em>{savedReport.entries.length} entry(s)</em>
+                </div>
+                <div className="history-actions">
+                  <button type="button" className="mini" onClick={() => openReport(savedDate)}>
+                    Open
+                  </button>
+                  <button
+                    type="button"
+                    className="mini edit"
+                    onClick={() => editReport(savedDate)}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    className="mini delete"
+                    onClick={() => deleteReport(savedDate)}
+                  >
+                    x
+                  </button>
+                </div>
+              </article>
             );
           })
         )}
