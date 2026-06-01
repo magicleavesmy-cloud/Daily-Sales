@@ -508,10 +508,10 @@ function DailyPage({
       </header>
 
       <section className="balance-hero">
-        <p>PC Balance</p>
+        <p>Balance</p>
         <h2>RM {money(totals.pcBalance)}</h2>
         <span>
-          Yesterday Cash + Total Sales = RM {money(totals.yesterday)} + RM{" "}
+          Yesterday Balance + Total Sales = RM {money(totals.yesterday)} + RM{" "}
           {money(totals.totalSales)}
         </span>
       </section>
@@ -642,7 +642,7 @@ function DailyPage({
               <article className="entry-row" key={entry.id}>
                 <div className="entry-meta">
                   <h3 className="entry-title">
-                    {entry.category || "-"} <span>•</span> {entry.subcategory || "-"}
+                    {entry.category || "-"} <span>{"\u2022"}</span> {entry.subcategory || "-"}
                   </h3>
                   <span
                     className={
@@ -698,7 +698,7 @@ function DailyPage({
           </label>
 
           <label>
-            Yesterday Cash PC
+            Yesterday Balance
             <input
               type="number"
               min="0"
@@ -714,8 +714,8 @@ function DailyPage({
         </div>
         <TotalRow label="+ Balance Cash" value={totals.balance} />
         <TotalRow label="= Total Sales" value={totals.totalSales} strong />
-        <TotalRow label="+ Yesterday Cash PC" value={totals.yesterday} />
-        <TotalRow label="= PC Balance" value={totals.pcBalance} strong />
+        <TotalRow label="+ Yesterday Balance" value={totals.yesterday} />
+        <TotalRow label="= Balance" value={totals.pcBalance} strong />
       </section>
 
       <section className="card preview-card">
@@ -1129,7 +1129,7 @@ function BottomNav({ navigate, onAdd, page }) {
         className={page === "/" ? "active" : ""}
         onClick={() => navigate("/")}
       >
-        <span>⌂</span>
+        <span>{"\u2302"}</span>
         Report
       </button>
       <button
@@ -1137,7 +1137,7 @@ function BottomNav({ navigate, onAdd, page }) {
         className={page === "/history" ? "active" : ""}
         onClick={() => navigate("/history")}
       >
-        <span>□</span>
+        <span>{"\u25a1"}</span>
         History
       </button>
       <button type="button" className="add-nav" onClick={onAdd} aria-label="Add entry">
@@ -1148,7 +1148,7 @@ function BottomNav({ navigate, onAdd, page }) {
         className={page === "/admin" ? "active" : ""}
         onClick={() => navigate("/admin")}
       >
-        <span>▦</span>
+        <span>{"\u25a6"}</span>
         Admin
       </button>
       <button
@@ -1156,7 +1156,7 @@ function BottomNav({ navigate, onAdd, page }) {
         className={page === "/settings" ? "active" : ""}
         onClick={() => navigate("/settings")}
       >
-        <span>⚙</span>
+        <span>{"\u2699"}</span>
         Settings
       </button>
     </nav>
@@ -1229,8 +1229,8 @@ function buildReport(reportDate, entries, totals) {
     reportLine,
     `TOTAL SALES        ${money(totals.totalSales)}`,
     "",
-    `YESTERDAY CASH PC  ${money(totals.yesterday)}`,
+    `YESTERDAY BALANCE  ${money(totals.yesterday)}`,
     reportLine,
-    `PC BALANCE         ${money(totals.pcBalance)}`,
+    `BALANCE            ${money(totals.pcBalance)}`,
   ].join("\n");
 }
